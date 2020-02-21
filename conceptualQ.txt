@@ -1,0 +1,3 @@
+1. We need to know the two vertices that form the whole edge. If the two vertices are (a, b) and our edge points to a, the symmetric half edge will point to the point b. We find point b by accessing the face of our edge and find the previous half edge in the list of half edges of the face. The previous half edge in the cycle will point to b. After finding b, we find a symmetric edge that points to b and which its previous half edge of the face points to a.     
+
+2. The function is drawMode(), which determines which primitives to use in drawing the mesh. The elemCount function returns the number of indices stored in the buffer index. This is used as a parameter when making a draw call to the GPU like glDrawElements.
