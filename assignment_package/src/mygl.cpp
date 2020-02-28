@@ -8,9 +8,10 @@
 
 MyGL::MyGL(QWidget *parent)
     : OpenGLContext(parent),
-      m_geomSquare(this),
+      m_geomSquare(this), m_mesh(this),
       m_progLambert(this), m_progFlat(this),
-      m_glCamera()
+      m_glCamera(), vDisplay(this), eDisplay(this), fDisplay(this),
+      selectedVertex(nullptr), selectedEdge(nullptr), selectedFace(nullptr)
 {
     setFocusPolicy(Qt::StrongFocus);
 }
@@ -19,7 +20,11 @@ MyGL::~MyGL()
 {
     makeCurrent();
     glDeleteVertexArrays(1, &vao);
+    m_mesh.destroy();
     m_geomSquare.destroy();
+    vDisplay.destroy();
+    eDisplay.destroy();
+    fDisplay.destroy();
 }
 
 void MyGL::initializeGL()
@@ -46,6 +51,20 @@ void MyGL::initializeGL()
     // Create a Vertex Attribute Object
     glGenVertexArrays(1, &vao);
 
+    m_mesh.destroy();
+    m_mesh.createCube();
+    m_mesh.create();
+
+    vDisplay.destroy();
+    vDisplay.create();
+
+    eDisplay.destroy();
+    eDisplay.create();
+
+    fDisplay.destroy();
+    fDisplay.create();
+
+
     //Create the instances of Cylinder and Sphere.
     m_geomSquare.create();
 
@@ -58,6 +77,17 @@ void MyGL::initializeGL()
     // We have to have a VAO bound in OpenGL 3.2 Core. But if we're not
     // using multiple VAOs, we can just bind one once.
     glBindVertexArray(vao);
+
+    for (auto &pointer : m_mesh.vertices) {
+        emit sig_sendVertices(pointer.get());
+    }
+    for (auto &pointer : m_mesh.edges) {
+        emit sig_sendEdges(pointer.get());
+    }
+    for (auto &pointer : m_mesh.faces) {
+        emit sig_sendFaces(pointer.get());
+    }
+
 }
 
 void MyGL::resizeGL(int w, int h)
@@ -95,13 +125,25 @@ void MyGL::paintGL()
     //Send the geometry's transformation matrix to the shader
     m_progLambert.setModelMatrix(model);
     //Draw the example sphere using our lambert shader
-    m_progLambert.draw(m_geomSquare);
+    //m_progLambert.draw(m_geomSquare);
 
     //Now do the same to render the cylinder
     //We've rotated it -45 degrees on the Z axis, then translated it to the point <2,2,0>
     model = glm::translate(glm::mat4(1.0f), glm::vec3(2,2,0)) * glm::rotate(glm::mat4(1.0f), glm::radians(-45.0f), glm::vec3(0,0,1));
+
+
     m_progLambert.setModelMatrix(model);
-    m_progLambert.draw(m_geomSquare);
+    //m_progLambert.draw(m_geomSquare);
+    m_progLambert.draw(m_mesh);
+
+    glDisable(GL_DEPTH_TEST);
+    m_progFlat.setModelMatrix(model);
+    m_progFlat.draw(vDisplay);
+    m_progFlat.draw(eDisplay);
+    m_progFlat.draw(fDisplay);
+
+
+    glEnable(GL_DEPTH_TEST);
 }
 
 
@@ -142,7 +184,236 @@ void MyGL::keyPressEvent(QKeyEvent *e)
         m_glCamera.TranslateAlongUp(amount);
     } else if (e->key() == Qt::Key_R) {
         m_glCamera = Camera(this->width(), this->height());
+    } else if (e->key() == Qt::Key_N) {
+        slot_halfEdgeSelected(selectedEdge->next);
+    } else if (e->key() == Qt::Key_M) {
+        slot_halfEdgeSelected(selectedEdge->sym);
+    } else if (e->key() == Qt::Key_F) {
+        slot_faceSelected(selectedEdge->face);
+    } else if (e->key() == Qt::Key_V) {
+        slot_vertexSelected(selectedEdge->vertex);
+    } else if ((e->modifiers() & Qt::ShiftModifier) && e->key() == Qt::Key_H) {
+        slot_halfEdgeSelected(selectedFace->halfedge);
+    } else if (e->key() == Qt::Key_H) {
+        slot_halfEdgeSelected(selectedVertex->halfedge);
     }
     m_glCamera.RecomputeAttributes();
     update();  // Calls paintGL, among other things
+}
+
+// slot for vertex selection
+void MyGL::slot_vertexSelected(QListWidgetItem* v) {
+    Vertex *vertex = dynamic_cast<Vertex*>(v);
+    if (vertex) {
+        selectedVertex = vertex;
+        vDisplay.updateVertex(vertex);
+        vDisplay.destroy();
+        vDisplay.create();
+        selectedEdge = nullptr;
+        eDisplay.updateEdge(nullptr);
+        fDisplay.updateFace(nullptr);
+        selectedFace = nullptr;
+        eDisplay.destroy();
+        eDisplay.create();
+        fDisplay.destroy();
+        fDisplay.create();
+        this->update();
+    }
+}
+
+// slot for edge selection
+void MyGL::slot_halfEdgeSelected(QListWidgetItem* e) {
+    HalfEdge *edge = dynamic_cast<HalfEdge*>(e);
+
+    if (edge) {
+        selectedEdge = edge;
+        eDisplay.updateEdge(edge);
+        eDisplay.destroy();
+        eDisplay.create();
+        selectedVertex = nullptr;
+        vDisplay.updateVertex(nullptr);
+        fDisplay.updateFace(nullptr);
+        selectedFace = nullptr;
+        vDisplay.destroy();
+        vDisplay.create();
+        fDisplay.destroy();
+        fDisplay.create();
+        this->update();
+    }
+}
+
+// slot for face selection
+void MyGL::slot_faceSelected(QListWidgetItem* f) {
+    Face *face = dynamic_cast<Face*>(f);
+
+    if (face) {
+        selectedFace = face;
+        fDisplay.updateFace(face);
+        fDisplay.destroy();
+        fDisplay.create();
+        this->update();
+        selectedEdge = nullptr;
+        eDisplay.updateEdge(nullptr);
+        vDisplay.updateVertex(nullptr);
+        selectedVertex = nullptr;
+        eDisplay.destroy();
+        eDisplay.create();
+        vDisplay.destroy();
+        vDisplay.create();
+    }
+}
+
+// slot for vertex translation in x
+void MyGL::slot_vertexTranslateX(double x) {
+    if (selectedVertex != nullptr) {
+        selectedVertex->pos.x = x;
+        m_mesh.destroy();
+        m_mesh.create();
+        vDisplay.destroy();
+        vDisplay.create();
+        this->update();
+    }
+}
+
+// slot for vertex translation in y
+void MyGL::slot_vertexTranslateY(double x) {
+    if (selectedVertex != nullptr) {
+        selectedVertex->pos.y = x;
+        m_mesh.destroy();
+        m_mesh.create();
+        vDisplay.destroy();
+        vDisplay.create();
+        this->update();
+    }
+}
+
+// slot for vertex translation in z
+void MyGL::slot_vertexTranslateZ(double x) {
+    if (selectedVertex != nullptr) {
+        selectedVertex->pos.z = x;
+        m_mesh.destroy();
+        m_mesh.create();
+        vDisplay.destroy();
+        vDisplay.create();
+        this->update();
+    }
+}
+
+// slot for color change in r
+void MyGL::slot_changeFaceR(double x) {
+    if (selectedFace != nullptr) {
+        selectedFace->color.r = x;
+        m_mesh.destroy();
+        m_mesh.create();
+        fDisplay.destroy();
+        fDisplay.create();
+        this->update();
+    }
+}
+
+// slot for color change in g
+void MyGL::slot_changeFaceG(double x) {
+    if (selectedFace != nullptr) {
+        selectedFace->color.g = x;
+        m_mesh.destroy();
+        m_mesh.create();
+        fDisplay.destroy();
+        fDisplay.create();
+        this->update();
+    }
+}
+
+// slot for color change in b
+void MyGL::slot_changeFaceB(double x) {
+    if (selectedFace != nullptr) {
+        selectedFace->color.b = x;
+        m_mesh.destroy();
+        m_mesh.create();
+        fDisplay.destroy();
+        fDisplay.create();
+        this->update();
+    }
+}
+
+// slot for adding a vertex to current halfedge
+void MyGL::slot_addVertex() {
+    if (selectedEdge != nullptr) {
+        Vertex* v1 = selectedEdge->vertex;
+        Vertex* v2 = selectedEdge->sym->vertex;
+        HalfEdge *h1 = selectedEdge;
+        HalfEdge *h2 = selectedEdge->sym;
+        uPtr<Vertex> v3 = mkU<Vertex>();
+        v3->pos = glm::vec3((v1->pos.x + v2->pos.x) / 2,
+                            (v1->pos.y + v2->pos.y) / 2,
+                            (v1->pos.z + v2->pos.z) / 2);
+        uPtr<HalfEdge> e1 = mkU<HalfEdge>();
+        uPtr<HalfEdge> e2 = mkU<HalfEdge>();
+        e1->face = h1->face;
+        e2->face = h2->face;
+        e1->sym = h2;
+        e2->sym = h1;
+        h1->sym = e2.get();
+        h2->sym = e1.get();
+        e1->next = h1->next;
+        e2->next = h2->next;
+        h1->next = e1.get();
+        h2->next = e2.get();
+        e1->vertex = h1->vertex;
+        h1->vertex = v3.get();
+        e2->vertex = h2->vertex;
+        h2->vertex = v3.get();
+        emit sig_sendEdges(e1.get());
+        emit sig_sendEdges(e2.get());
+        emit sig_sendVertices(v3.get());
+        m_mesh.edges.push_back(std::move(e1));
+        m_mesh.edges.push_back(std::move(e2));
+        m_mesh.vertices.push_back(std::move(v3));
+        m_mesh.destroy();
+        m_mesh.create();
+        eDisplay.destroy();
+        eDisplay.create();
+        this->update();
+    }
+}
+
+// slot for triangulating the current face
+void MyGL::slot_triangulate() {
+    if (selectedFace != nullptr) {
+        int count = selectedFace->vertexCount();
+        Face *currFace = selectedFace;
+        // keep triangulating until every parts are triangles
+        for (int i = 0; i < count - 3; i++) {
+            HalfEdge *edge = currFace->halfedge;
+            uPtr<HalfEdge> e1 = mkU<HalfEdge>();
+            uPtr<HalfEdge> e2 = mkU<HalfEdge>();
+            e1->vertex = edge->vertex;
+            e2->vertex = edge->next->next->vertex;
+            e1->sym = e2.get();
+            e2->sym = e1.get();
+            uPtr<Face> f2 = mkU<Face>();
+            f2->color = glm::vec3(currFace->color.r,
+                                  currFace->color.g,
+                                  currFace->color.b);
+            e1->face = f2.get();
+            edge->next->face = f2.get();
+            edge->next->next->face = f2.get();
+            e2->face = currFace;
+            f2->halfedge = e1.get();
+            e2->next = edge->next->next->next;
+            edge->next->next->next = e1.get();
+            e1->next = edge->next;
+            edge->next = e2.get();
+            emit sig_sendEdges(e1.get());
+            emit sig_sendEdges(e2.get());
+            emit sig_sendFaces(f2.get());
+            m_mesh.edges.push_back(std::move(e1));
+            m_mesh.edges.push_back(std::move(e2));
+            m_mesh.faces.push_back(std::move(f2));
+        }
+    }
+    m_mesh.destroy();
+    m_mesh.create();
+    fDisplay.destroy();
+    fDisplay.create();
+    this->update();
 }
