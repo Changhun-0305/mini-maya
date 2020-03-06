@@ -15,5 +15,7 @@ public:
     glm::vec3 color; // color
     int id; // id of face
     int vertexCount(); // returns vertex count of face
+
+
 };
 

@@ -3,10 +3,11 @@
 #include "vertex.h"
 #include <QListWidgetItem>
 
-static int lastHalfEdge;
 
 class Face;
 class Vertex;
+
+static int lastHalfEdge;
 
 class HalfEdge : public QListWidgetItem
 {
@@ -18,4 +19,6 @@ public:
     Vertex *vertex;
     int id;
     HalfEdge* prevEdge();
+
+
 };

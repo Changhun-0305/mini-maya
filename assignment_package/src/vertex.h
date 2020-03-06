@@ -16,4 +16,6 @@ public:
     glm::vec3 pos; // vertex position
     HalfEdge *halfedge; // halfedge that points to the vertex
     int id; // unique id for vertex
+
+
 };

@@ -1,7 +1,9 @@
 #include "face.h"
 
 Face::Face()
-    : QListWidgetItem(), color(0, 0, 0)
+    : QListWidgetItem(), color(float(rand())/float((RAND_MAX)),
+                               float(rand())/float((RAND_MAX)),
+                               float(rand())/float((RAND_MAX)))
 {
     id = lastFace++;
     // set text of widget item

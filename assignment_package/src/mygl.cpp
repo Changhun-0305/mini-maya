@@ -4,6 +4,11 @@
 #include <iostream>
 #include <QApplication>
 #include <QKeyEvent>
+#include <QFileDialog>
+#include <QFile>
+#include <fstream>
+#include <sstream>
+#include <QStringList>
 
 
 MyGL::MyGL(QWidget *parent)
@@ -114,14 +119,15 @@ void MyGL::paintGL()
 
     m_progFlat.setViewProjMatrix(m_glCamera.getViewProj());
     m_progLambert.setViewProjMatrix(m_glCamera.getViewProj());
-    m_progLambert.setCamPos(m_glCamera.eye);
+    m_progLambert.setCamPos(glm::vec3(m_glCamera.eye));
     m_progFlat.setModelMatrix(glm::mat4(1.f));
 
     //Create a model matrix. This one rotates the square by PI/4 radians then translates it by <-2,0,0>.
     //Note that we have to transpose the model matrix before passing it to the shader
     //This is because OpenGL expects column-major matrices, but you've
     //implemented row-major matrices.
-    glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(-2,0,0)) * glm::rotate(glm::mat4(), 0.25f * 3.14159f, glm::vec3(0,1,0));
+    //glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(-2,0,0)) * glm::rotate(glm::mat4(), 0.25f * 3.14159f, glm::vec3(0,1,0));
+    glm::mat4 model = glm::mat4();
     //Send the geometry's transformation matrix to the shader
     m_progLambert.setModelMatrix(model);
     //Draw the example sphere using our lambert shader
@@ -129,7 +135,7 @@ void MyGL::paintGL()
 
     //Now do the same to render the cylinder
     //We've rotated it -45 degrees on the Z axis, then translated it to the point <2,2,0>
-    model = glm::translate(glm::mat4(1.0f), glm::vec3(2,2,0)) * glm::rotate(glm::mat4(1.0f), glm::radians(-45.0f), glm::vec3(0,0,1));
+    //model = glm::translate(glm::mat4(1.0f), glm::vec3(2,2,0)) * glm::rotate(glm::mat4(1.0f), glm::radians(-45.0f), glm::vec3(0,0,1));
 
 
     m_progLambert.setModelMatrix(model);
@@ -416,4 +422,411 @@ void MyGL::slot_triangulate() {
     fDisplay.destroy();
     fDisplay.create();
     this->update();
+}
+
+
+/// slot for subdividing mesh
+void MyGL::slot_subdivide() {
+    // compute centroids of faces
+    computeCentroids();
+    // compute midpoints of edges
+    computeMidPts();
+    // smooth vertices of original vertices
+    smoothVertices();
+
+    std::map<int, HalfEdge*> nextMap;
+
+    std::vector<HalfEdge*> toSplit;
+    for (uPtr<HalfEdge> &e : m_mesh.edges) {
+        if (std::find(toSplit.begin(), toSplit.end(), e->sym) == toSplit.end()) {
+            toSplit.push_back(e.get());
+        }
+    }
+    for (HalfEdge *e : toSplit) {
+        splitByMidPt(e);
+    }
+    for (uPtr<HalfEdge> &e : m_mesh.edges) {
+        nextMap[e->id] = e->next;
+    }
+
+
+    std::vector<uPtr<Face>> newFaces;
+    // iterate through each face and subdivide
+    for (uPtr<Face> &face : m_mesh.faces) {
+        HalfEdge *curr = face->halfedge;
+        HalfEdge *start = face->halfedge;
+        uPtr<Vertex> ct = std::move(centroids[face->id]);
+        int count = face->vertexCount() / 2;
+        std::vector<uPtr<HalfEdge>> newEdges;
+
+        // make new edges
+        for (int i = 0; i < count; i++) {
+            uPtr<HalfEdge> e1 = mkU<HalfEdge>();
+            uPtr<HalfEdge> e2 = mkU<HalfEdge>();
+            if (i != 0) {
+                e2->sym = newEdges[newEdges.size()-2].get();
+                newEdges[newEdges.size()-2]->sym = e2.get();
+            }
+            newEdges.push_back(std::move(e1));
+            newEdges.push_back(std::move(e2));
+        }
+        newEdges[newEdges.size()-2]->sym = newEdges[1].get();
+        newEdges[1]->sym = newEdges[newEdges.size()-2].get();
+        int track = 0;
+
+
+        //quadrangulate faces
+        do {
+            HalfEdge *nextEdge = curr->next;
+            HalfEdge *e1 = newEdges[track].get();
+            HalfEdge *e2 = newEdges[track+1].get();
+
+            nextEdge->next = e1;
+            e1->next = e2;
+            e2->next = curr;
+            if (nextMap[nextEdge->id] == face->halfedge) {
+                e1->face = face.get();
+                e2->face = face.get();
+                face->halfedge = curr;
+            } else {
+                uPtr<Face> newFace = mkU<Face>();
+                curr->face = newFace.get();
+                nextEdge->face = newFace.get();
+                e1->face = newFace.get();
+                e2->face = newFace.get();
+                newFace->halfedge = curr;
+                newFaces.push_back(std::move(newFace));
+            }
+            e1->vertex = ct.get();
+            e2->vertex = curr->sym->vertex;
+            ct->halfedge = e1;
+            track += 2;
+            curr = nextMap[nextEdge->id];
+        } while (curr != start);
+
+        emit sig_sendVertices(ct.get());
+        m_mesh.vertices.push_back(std::move(ct));
+        for (uPtr<HalfEdge> &e : newEdges) {
+            emit sig_sendEdges(e.get());
+            m_mesh.edges.push_back(std::move(e));
+        }
+    }
+    for (uPtr<Face> &f : newFaces) {
+        emit sig_sendFaces(f.get());
+        m_mesh.faces.push_back(std::move(f));
+    }
+    m_mesh.destroy();
+    m_mesh.create();
+    this->update();
+
+
+}
+
+// stores midpoints of edges
+void MyGL::splitByMidPt(HalfEdge *edge) {
+    HalfEdge *h1 = edge;
+    HalfEdge *h2 = edge->sym;
+    uPtr<Vertex> v3 = mkU<Vertex>();
+    v3->pos = glm::vec3(midPts[edge->id]->pos);
+    uPtr<HalfEdge> e1 = mkU<HalfEdge>();
+    uPtr<HalfEdge> e2 = mkU<HalfEdge>();
+    e1->face = h1->face;
+    e2->face = h2->face;
+    e1->sym = h2;
+    e2->sym = h1;
+    h1->sym = e2.get();
+    h2->sym = e1.get();
+    e1->next = h1->next;
+    e2->next = h2->next;
+    h1->next = e1.get();
+    h2->next = e2.get();
+    e1->vertex = h1->vertex;
+    h1->vertex = v3.get();
+    e2->vertex = h2->vertex;
+    h2->vertex = v3.get();
+    h1->face->halfedge = e1.get();
+    h2->face->halfedge = e2.get();
+    emit sig_sendEdges(e1.get());
+    emit sig_sendEdges(e2.get());
+    emit sig_sendVertices(v3.get());
+    m_mesh.edges.push_back(std::move(e1));
+    m_mesh.edges.push_back(std::move(e2));
+    m_mesh.vertices.push_back(std::move(v3));
+}
+
+// smooth vertices, used in subdivision
+void MyGL::smoothVertices() {
+    std::vector<glm::vec3> newVtxPos;
+
+    // iterate through vertices and smooth them
+    for (uPtr<Vertex> &vertex : m_mesh.vertices) {
+        glm::vec3 sum_e = glm::vec3(0.0, 0.0, 0.0);
+        glm::vec3 sum_f = glm::vec3(0.0, 0.0, 0.0);
+        int n = 0;
+        for (uPtr<HalfEdge> &edge : m_mesh.edges) {
+            if (edge->vertex == vertex.get()) {
+                n += 1;
+                sum_e += midPts[edge->id]->pos;
+                sum_f += centroids[edge->face->id]->pos;
+            }
+        }
+        // new position
+        glm::vec3 newPos = glm::vec3(vertex->pos[0] * (n - 2) / n,
+                                     vertex->pos[1] * (n - 2) / n,
+                                     vertex->pos[2] * (n - 2) / n) +
+                           glm::vec3(sum_e[0] / (n*n), sum_e[1] / (n*n), sum_e[2] / (n*n)) +
+                           glm::vec3(sum_f[0] / (n*n), sum_f[1] / (n*n), sum_f[2] / (n*n));
+        newVtxPos.push_back(newPos);
+    }
+    int track = 0;
+    for (uPtr<Vertex> &vertex : m_mesh.vertices) {
+        vertex->pos = glm::vec3(newVtxPos[track][0], newVtxPos[track][1], newVtxPos[track][2]);
+        track += 1;
+    }
+}
+
+// split by mid points, used in subdivision
+void MyGL::computeMidPts() {
+    midPts.clear();
+    for (uPtr<Face> &face : m_mesh.faces) {
+        HalfEdge *curr = face->halfedge;
+        do {
+            uPtr<Vertex> v = mkU<Vertex>();
+            glm::vec3 pos = glm::vec3(0.0, 0.0, 0.0);
+            pos += curr->vertex->pos;
+            pos += curr->sym->vertex->pos;
+            pos += centroids[face->id]->pos;
+            if (curr->sym != nullptr) {
+                pos += centroids[curr->sym->face->id]->pos;
+                pos[0] = pos[0] / 4.0;
+                pos[1] = pos[1] / 4.0;
+                pos[2] = pos[2] / 4.0;
+            } else {
+                pos[0] = pos[0] / 3.0;
+                pos[1] = pos[1] / 3.0;
+                pos[2] = pos[2] / 3.0;
+            }
+            v->pos = pos;
+            midPts[curr->id] = std::move(v);
+            curr = curr->next;
+        } while (curr != face->halfedge);
+    }
+}
+
+// get centroids of faces, used in subdivision
+void MyGL::computeCentroids() {
+    centroids.clear();
+    for (uPtr<Face> &face : m_mesh.faces) {
+        uPtr<Vertex> v = mkU<Vertex>();
+        glm::vec3 pos = glm::vec3(0.0, 0.0, 0.0);
+        HalfEdge *curr = face->halfedge;
+        int count = 0;
+        do {
+            pos += curr->vertex->pos;
+            curr = curr->next;
+            count += 1;
+        } while (curr != face->halfedge);
+        pos[0] = pos[0] / count;
+        pos[1] = pos[1] / count;
+        pos[2] = pos[2] / count;
+        v->pos = pos;
+        centroids[face->id] = std::move(v);
+    }
+}
+
+// slot for extruding edge
+void MyGL::slot_extrude() {
+    if (selectedFace != nullptr) {
+        int count = selectedFace->vertexCount();
+        std::vector<uPtr<HalfEdge>> vertEdges;
+        std::vector<uPtr<HalfEdge>> topEdges;
+        std::vector<uPtr<Vertex>> vertices;
+        HalfEdge *curr = selectedFace->halfedge;
+        HalfEdge *startEdge = selectedFace->halfedge;
+        glm::vec3 vec1 = glm::normalize(curr->next->vertex->pos - curr->vertex->pos);
+        glm::vec3 vec2 = glm::normalize(curr->next->next->vertex->pos - curr->next->vertex->pos);
+        glm::vec3 normal = glm::normalize(glm::cross(vec1, vec2));
+
+        // initialize new vertices and edges
+        for (int i = 0; i < count; i++) {
+            uPtr<HalfEdge> v1 = mkU<HalfEdge>();
+            uPtr<HalfEdge> v2 = mkU<HalfEdge>();
+            uPtr<HalfEdge> top = mkU<HalfEdge>();
+            uPtr<Vertex> v = mkU<Vertex>();
+            v->pos = glm::vec3(startEdge->vertex->pos) + normal;
+            startEdge = startEdge->next;
+            if (i != 0) {
+                v2->sym = vertEdges[(vertEdges.size()-2)].get();
+                vertEdges[vertEdges.size()-2]->sym = v2.get();
+            }
+            vertEdges.push_back(std::move(v1));
+            vertEdges.push_back(std::move(v2));
+            topEdges.push_back(std::move(top));
+            vertices.push_back(std::move(v));
+        }
+        vertEdges[1]->sym = vertEdges[vertEdges.size()-2].get();
+        vertEdges[vertEdges.size()-2]->sym = vertEdges[1].get();
+
+        // extrude each face
+        Vertex *startVertex = curr->sym->vertex;
+        for (int i = 0; i < count; i++) {
+            HalfEdge *HE1 = curr;
+            HalfEdge *HE2 = HE1->sym;
+            Vertex *v1 = HE1->vertex;
+            Vertex *v2 = HE2->vertex;
+            Vertex *v3 = vertices[i].get();
+            Vertex *v4 = vertices[(i-1) % vertices.size()].get();
+            uPtr<HalfEdge> HE1B = mkU<HalfEdge>();
+            HalfEdge *HE2B = topEdges[i].get();
+            HalfEdge *HE3 = vertEdges[i*2].get();
+            HalfEdge *HE4 = vertEdges[i*2+1].get();
+            uPtr<Face> f = mkU<Face>();
+            HE1->vertex = v3;
+            HE1->prevEdge()->vertex = v4;
+            HE1B->sym = HE1;
+            HE2B->sym = HE2;
+            HE1->sym = HE1B.get();
+            HE2->sym = HE2B;
+            HE1B->vertex = v4;
+            if (i == count - 1) {
+                HE2B->vertex = startVertex;
+            } else {
+                HE2B->vertex = v1;
+            }
+            HE1B->face = f.get();
+            HE2B->face = f.get();
+            HE3->face = f.get();
+            HE4->face = f.get();
+            HE3->vertex = v3;
+            HE4->vertex = v2;
+            HE1B->next = HE4;
+            HE4->next = HE2B;
+            HE2B->next = HE3;
+            HE3->next = HE1B.get();
+            f->halfedge = HE1B.get();
+            v3->halfedge = HE1;
+            v4->halfedge = HE2;
+            curr = curr->next;
+            emit sig_sendEdges(HE1B.get());
+            emit sig_sendFaces(f.get());
+            m_mesh.edges.push_back(std::move(HE1B));
+            m_mesh.faces.push_back(std::move(f));
+        }
+
+
+        // send signals to gui
+        for (uPtr<HalfEdge> &edge : vertEdges) {
+            emit sig_sendEdges(edge.get());
+            m_mesh.edges.push_back(std::move(edge));
+        }
+        for (uPtr<HalfEdge> &edge : topEdges) {
+            emit sig_sendEdges(edge.get());
+            m_mesh.edges.push_back(std::move(edge));
+        }
+        for (uPtr<Vertex> &vertex : vertices) {
+            emit sig_sendVertices(vertex.get());
+            m_mesh.vertices.push_back(std::move(vertex));
+        }
+        fDisplay.destroy();
+        fDisplay.create();
+        m_mesh.destroy();
+        m_mesh.create();
+        this->update();
+
+    }
+}
+
+// send signals of mesh
+void MyGL::sendSignalsMesh() {
+    for (uPtr<HalfEdge> &edge : m_mesh.edges) {
+        emit sig_sendEdges(edge.get());
+    }
+    for (uPtr<Face> &face : m_mesh.faces) {
+        emit sig_sendFaces(face.get());
+    }
+    for (uPtr<Vertex> &vertex : m_mesh.vertices) {
+        emit sig_sendVertices(vertex.get());
+    }
+}
+
+// slot for reading obj files
+void MyGL::slot_readObj() {
+    QString filename = QFileDialog::getOpenFileName(0, QString("Load obj"), QDir::currentPath().append(QString("../..")), QString("*.obj"));
+    QFile file(filename);
+    std::vector<glm::vec4> posVec;
+    std::map<std::pair<int, int>, HalfEdge*> symmap;
+    int faceCount = 0;
+
+    // if file is valid
+    if (file.exists()) {
+        m_mesh.edges.clear();
+        m_mesh.faces.clear();
+        m_mesh.vertices.clear();
+        if (file.open(QFile::ReadOnly | QFile::Text)) {
+            while (!file.atEnd()) {
+                QString line = file.readLine().trimmed();
+                QStringList lineParts = line.split(QRegularExpression("\\s+"));
+                // read through line
+                if (lineParts.count() > 0) {
+                    if (lineParts[0].compare("v", Qt::CaseInsensitive) == 0) {
+                        uPtr<Vertex> v = mkU<Vertex>();
+                        v->pos = glm::vec3(lineParts[1].toFloat(), lineParts[2].toFloat(), lineParts[3].toFloat());
+                        m_mesh.vertices.push_back(std::move(v));
+                    } else if (lineParts[0].compare("f", Qt::CaseInsensitive) == 0) {
+                        uPtr<Face> face = mkU<Face>();
+                        std::vector<uPtr<HalfEdge>> edges;
+                        std::vector<QStringList> stringLists;
+
+                        // initialize new edges
+                        for (int i = 1; i < lineParts.size(); i++) {
+                            uPtr<HalfEdge> e = mkU<HalfEdge>();
+                            QStringList segParts = lineParts[i].split("/");
+                            stringLists.push_back(segParts);
+                            e->vertex = m_mesh.vertices[segParts[0].toInt() - 1].get();
+                            m_mesh.vertices[segParts[0].toInt() - 1]->halfedge = e.get();
+                            edges.push_back(std::move(e));
+                        }
+                        int count = lineParts.size() - 1;
+
+                        // iterate through each face
+                        for (int i = 1; i < lineParts.size(); i++) {
+                            QStringList segParts = stringLists[i - 1];
+                            posVec.push_back(glm::vec4(m_mesh.vertices[segParts[0].toInt() - 1]->pos, 1));
+                            HalfEdge *edge = edges[i-1].get();
+                            edge->next = edges[(i) % count].get();
+                            edge->face = face.get();
+                            std::pair<int, int> sympair;
+                            std::pair<int, int> currpair;
+                            if (i == 1) {
+                                 sympair = std::make_pair(segParts[0].toInt() - 1, stringLists[count-1][0].toInt() - 1);
+                                 currpair = std::make_pair(stringLists[count-1][0].toInt()-1, segParts[0].toInt() - 1);
+                            } else {
+                                sympair = std::make_pair(segParts[0].toInt() - 1, stringLists[(i-2) % count][0].toInt() - 1);
+                                currpair = std::make_pair(stringLists[(i-2) % count][0].toInt()-1, segParts[0].toInt() - 1);
+                            }
+                            if (symmap.find(sympair) == symmap.end()) {
+                                symmap[currpair] = edge;
+                            } else {
+                                edge->sym = symmap[sympair];
+                                symmap[sympair]->sym = edge;
+                            }
+                        }
+
+                        // set halfedge of new face
+                        face->halfedge = edges[0].get();
+                        faceCount += lineParts.size() - 1;
+                        m_mesh.faces.push_back(std::move(face));
+                        for (uPtr<HalfEdge> &edge : edges) {
+                            m_mesh.edges.push_back(std::move(edge));
+                        }
+                    }
+                }
+            }
+            file.close();
+            m_mesh.destroy();
+            m_mesh.create();
+            sendSignalsMesh();
+            update();
+        }
+    }
 }

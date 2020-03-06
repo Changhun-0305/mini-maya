@@ -24,7 +24,7 @@ void HalfEdgeDisplay::create() {
         idxVec.push_back(0);
         idxVec.push_back(1);
         posVec.push_back(glm::vec4(this->representedEdge->vertex->pos, 1));
-        posVec.push_back(glm::vec4(this->representedEdge->prevEdge()->vertex->pos, 1));
+        posVec.push_back(glm::vec4(this->representedEdge->sym->vertex->pos, 1));
         colorVec.push_back(glm::vec4(1, 1, 0, 1));
         colorVec.push_back(glm::vec4(1, 0, 0, 1));
     }

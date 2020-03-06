@@ -76,6 +76,7 @@ void Mesh::create() {
     mp_context->glBufferData(GL_ARRAY_BUFFER, colorVec.size() * sizeof(glm::vec4), colorVec.data(), GL_STATIC_DRAW);
 }
 
+
 // initializes cube structure
 void Mesh::createCube() {
 
@@ -311,3 +312,5 @@ void Mesh::createCube() {
     faces.push_back(std::move(back));
 
 }
+
+

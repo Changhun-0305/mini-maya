@@ -2,7 +2,7 @@
 
 // constructor
 HalfEdge::HalfEdge()
-    : QListWidgetItem()
+    : QListWidgetItem(), sym(nullptr)
 {
     id = lastHalfEdge++;
     this->setText(QString::number(this->id));

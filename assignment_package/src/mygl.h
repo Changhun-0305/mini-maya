@@ -48,12 +48,20 @@ public:
     void initializeGL();
     void resizeGL(int w, int h);
     void paintGL();
+    void computeCentroids(); // get centroids of faces, used in subdivision
+    void computeMidPts(); // get midpoints of edges, used in subdivision
+    void smoothVertices(); // smooth vertices, used in subdivision
+    void splitByMidPt(HalfEdge*); // split by mid points, used in subdivision
+
+    std::map<int, uPtr<Vertex>> centroids; // stores centroids of faces
+    std::map<int, uPtr<Vertex>> midPts; // stores midpoints of edges
 
 
 signals:
     void sig_sendVertices(Vertex*); // send vertices to gui
     void sig_sendEdges(HalfEdge*); // send edges to gui
     void sig_sendFaces(Face*); // send faces to gui
+
 
 
 public slots:
@@ -71,7 +79,10 @@ public slots:
 
     void slot_addVertex(); // slot for adding a vertex to current halfedge
     void slot_triangulate(); // slot for triangulating the current face
-
+    void slot_subdivide(); // slot for subdividing mesh
+    void slot_extrude(); // slot for extruding edge
+    void slot_readObj(); // slot for reading obj files
+    void sendSignalsMesh(); // send signals of mesh
 
 protected:
     void keyPressEvent(QKeyEvent *e);

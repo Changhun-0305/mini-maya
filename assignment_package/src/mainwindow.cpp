@@ -52,6 +52,13 @@ MainWindow::MainWindow(QWidget *parent) :
     // current face is triangulated
     connect(ui->triangulateBtn, SIGNAL(clicked(bool)),
             ui->mygl, SLOT(slot_triangulate()));
+    connect(ui->subdivideBtn, SIGNAL(clicked(bool)),
+            ui->mygl, SLOT(slot_subdivide()));
+    connect(ui->extrudeBtn, SIGNAL(clicked(bool)),
+            ui->mygl, SLOT(slot_extrude()));
+    connect(ui->loadBtn, SIGNAL(clicked(bool)),
+            ui->mygl, SLOT(slot_readObj()));
+
 }
 
 MainWindow::~MainWindow()
